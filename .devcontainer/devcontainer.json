@@ -9,7 +9,8 @@
 
   "portsAttributes": {
     "3001": {
-      "label": "Codespace Agent",
+      "label": "Codespace Agent API",
+      "visibility": "public",
       "onAutoForward": "openBrowser"
     }
   }
