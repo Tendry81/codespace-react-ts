@@ -54,6 +54,11 @@ console.log(`🔒 Authentication: enabled`);
  * Vérifie l'authentification Bearer token
  */
 function assertAuth(req, res) {
+  // OPTIONS requests don't need auth (CORS preflight)
+  if (req.method === 'OPTIONS') {
+    return true;
+  }
+  
   const auth = req.headers.authorization;
   if (!auth || auth !== `Bearer ${AGENT_TOKEN}`) {
     res.status(401).json({ error: "Unauthorized" });
@@ -119,19 +124,19 @@ function isAllowedExtension(filePath) {
 /* ================= HTTP API ================= */
 const app = express();
 
-// CORS Configuration - Allow all origins
+// CORS Configuration - FIXED: credentials false with wildcard origin
 const corsOptions = {
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   exposedHeaders: ['Content-Length', 'Content-Type'],
-  credentials: false,  // ✅ Changed to false
-  maxAge: 86400
+  credentials: false,  // ✅ FIXED: Must be false when using origin: '*'
+  maxAge: 86400 // 24 hours
 };
 
 app.use(cors(corsOptions));
 
-// Handle preflight requests explicitly
+// Handle preflight requests explicitly - MUST come before auth check
 app.options('*', cors(corsOptions));
 
 app.use(express.json({ limit: "10mb" }));
@@ -533,7 +538,7 @@ wss.on("connection", (ws, req) => {
   }));
 });
 
-/* ---- WS AUTH + ROUTING with CORS support ---- */
+/* ---- WS AUTH + ROUTING ---- */
 server.on("upgrade", (req, socket, head) => {
   const auth = req.headers.authorization;
   
@@ -546,22 +551,6 @@ server.on("upgrade", (req, socket, head) => {
 
   if (req.url === "/ws/terminal") {
     wss.handleUpgrade(req, socket, head, ws => {
-      // Set CORS headers for WebSocket connection
-      const headers = [
-        'HTTP/1.1 101 Switching Protocols',
-        'Upgrade: websocket',
-        'Connection: Upgrade',
-        'Sec-WebSocket-Accept: ' + require('crypto')
-          .createHash('sha1')
-          .update(req.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
-          .digest('base64'),
-        'Access-Control-Allow-Origin: *',
-        'Access-Control-Allow-Credentials: true',
-        'Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS',
-        'Access-Control-Allow-Headers: Content-Type, Authorization'
-      ];
-      
-      socket.write(headers.join('\r\n') + '\r\n\r\n');
       wss.emit("connection", ws, req);
     });
   } else {
