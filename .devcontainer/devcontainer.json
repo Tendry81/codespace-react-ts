@@ -3,8 +3,7 @@
   "image": "mcr.microsoft.com/devcontainers/javascript-node:20",
 
   "secrets": {
-  "NAME_OF_SECRET_1": {
-    "AGENT_SECRET": { }
+    "AGENT_TOKEN": {}
   },
   
   "postCreateCommand": "npm --prefix .codespace-agent install",
