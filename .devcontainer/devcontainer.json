@@ -2,6 +2,11 @@
   "name": "Codespace with Agent",
   "image": "mcr.microsoft.com/devcontainers/javascript-node:20",
 
+  "secrets": {
+  "NAME_OF_SECRET_1": {
+    "AGENT_SECRET": { }
+  },
+  
   "postCreateCommand": "npm --prefix .codespace-agent install",
   "postStartCommand": "npm --prefix .codespace-agent start",
 
