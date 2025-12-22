@@ -10,7 +10,6 @@ import os from "os";
 /* ================= CONFIG ================= */
 const PORT = process.env.PORT || 3001;
 
-// Déterminer le WORKDIR : parent du dossier .codespace-agent
 async function determineWorkdir() {
   if (process.env.WORKDIR) {
     return process.env.WORKDIR;
@@ -18,26 +17,22 @@ async function determineWorkdir() {
   
   const cwd = process.cwd();
   
-  // Si on est dans le dossier .codespace-agent, prendre le parent
   if (cwd.endsWith('.codespace-agent') || path.basename(cwd) === '.codespace-agent') {
     return path.dirname(cwd);
   }
   
-  // Sinon, chercher le dossier .codespace-agent
   const codespaceDir = path.join(cwd, '.codespace-agent');
   try {
     await fs.access(codespaceDir);
-    // .codespace-agent existe, donc cwd est le parent
     return cwd;
   } catch {
-    // .codespace-agent n'existe pas, utiliser le répertoire courant
     return cwd;
   }
 }
 
 const WORKDIR = await determineWorkdir();
 const AGENT_TOKEN = process.env.AGENT_TOKEN || 'secrets';
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const ALLOWED_EXTENSIONS = process.env.ALLOWED_EXTENSIONS?.split(',') || null;
 
 if (!AGENT_TOKEN) {
@@ -50,15 +45,7 @@ console.log(`🔒 Authentication: enabled`);
 
 /* ================= UTILS ================= */
 
-/**
- * Vérifie l'authentification Bearer token
- */
 function assertAuth(req, res) {
-  // OPTIONS requests don't need auth (CORS preflight)
-  if (req.method === 'OPTIONS') {
-    return true;
-  }
-  
   const auth = req.headers.authorization;
   if (!auth || auth !== `Bearer ${AGENT_TOKEN}`) {
     res.status(401).json({ error: "Unauthorized" });
@@ -67,9 +54,6 @@ function assertAuth(req, res) {
   return true;
 }
 
-/**
- * Sécurise les chemins de fichiers pour éviter les directory traversal attacks
- */
 function safePath(p) {
   if (!p) {
     throw new Error("Path is required");
@@ -81,9 +65,6 @@ function safePath(p) {
   return resolved;
 }
 
-/**
- * Vérifie si un fichier existe
- */
 async function fileExists(filePath) {
   try {
     await fs.access(filePath);
@@ -93,9 +74,6 @@ async function fileExists(filePath) {
   }
 }
 
-/**
- * Obtient des informations sur un fichier/dossier
- */
 async function getFileStats(filePath) {
   try {
     const stats = await fs.stat(filePath);
@@ -112,9 +90,6 @@ async function getFileStats(filePath) {
   }
 }
 
-/**
- * Vérifie l'extension du fichier si ALLOWED_EXTENSIONS est défini
- */
 function isAllowedExtension(filePath) {
   if (!ALLOWED_EXTENSIONS) return true;
   const ext = path.extname(filePath).toLowerCase();
@@ -124,37 +99,46 @@ function isAllowedExtension(filePath) {
 /* ================= HTTP API ================= */
 const app = express();
 
-// CORS Configuration - FIXED: credentials false with wildcard origin
+// ✅ FIX 1: Handle OPTIONS requests FIRST, before anything else
+app.use((req, res, next) => {
+  // Log all requests for debugging
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.url} - Origin: ${req.headers.origin || 'none'}`);
+  
+  // Handle OPTIONS immediately
+  if (req.method === 'OPTIONS') {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
+    res.header('Access-Control-Max-Age', '86400');
+    return res.status(200).end();
+  }
+  next();
+});
+
+// ✅ FIX 2: CORS with correct configuration
 const corsOptions = {
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   exposedHeaders: ['Content-Length', 'Content-Type'],
-  credentials: false,  // ✅ FIXED: Must be false when using origin: '*'
-  maxAge: 86400 // 24 hours
+  credentials: false,  // ✅ Must be false with origin: '*'
+  maxAge: 86400
 };
 
 app.use(cors(corsOptions));
 
-// Handle preflight requests explicitly - MUST come before auth check
-app.options('*', cors(corsOptions));
-
 app.use(express.json({ limit: "10mb" }));
 
-// Logging middleware
-app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
-  next();
-});
-
 /* ---- HEALTH CHECK ---- */
-app.get("/health", (_, res) => {
+app.get("/health", (req, res) => {
+  console.log('✅ Health check accessed');
   res.json({ 
     status: "ok",
     uptime: process.uptime(),
     workdir: WORKDIR,
     platform: os.platform(),
-    nodeVersion: process.version
+    nodeVersion: process.version,
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -165,19 +149,16 @@ app.get("/api/files", async (req, res) => {
   try {
     const filePath = safePath(req.query.path);
     
-    // Vérifier si le fichier existe
     if (!(await fileExists(filePath))) {
       return res.status(404).json({ error: "File not found" });
     }
 
     const stats = await getFileStats(filePath);
     
-    // Vérifier si c'est un fichier
     if (stats.isDirectory) {
       return res.status(400).json({ error: "Path is a directory, not a file" });
     }
 
-    // Vérifier la taille du fichier
     if (stats.size > MAX_FILE_SIZE) {
       return res.status(413).json({ 
         error: `File too large (max ${MAX_FILE_SIZE / 1024 / 1024}MB)`,
@@ -210,7 +191,6 @@ app.post("/api/files", async (req, res) => {
 
     const filePath = safePath(file);
 
-    // Vérifier l'extension si nécessaire
     if (!isAllowedExtension(filePath)) {
       return res.status(403).json({ 
         error: "File extension not allowed",
@@ -218,7 +198,6 @@ app.post("/api/files", async (req, res) => {
       });
     }
 
-    // Créer les dossiers parents si nécessaire
     if (createDirs) {
       await fs.mkdir(path.dirname(filePath), { recursive: true });
     }
@@ -250,7 +229,6 @@ app.put("/api/files", async (req, res) => {
 
     const filePath = safePath(file);
 
-    // Vérifier si le fichier existe
     if (!(await fileExists(filePath))) {
       return res.status(404).json({ error: "File not found" });
     }
@@ -450,7 +428,6 @@ app.get("/api/search", async (req, res) => {
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
-// Stocker les shells actifs
 const activeSessions = new Map();
 
 wss.on("connection", (ws, req) => {
@@ -497,7 +474,6 @@ wss.on("connection", (ws, req) => {
     try {
       const text = msg.toString();
       
-      // Gérer les messages JSON (commandes de contrôle)
       if (text.startsWith("{")) {
         const json = JSON.parse(text);
         
@@ -507,7 +483,6 @@ wss.on("connection", (ws, req) => {
           ws.send(JSON.stringify({ type: "pong" }));
         }
       } else {
-        // Envoyer le texte au shell
         shell.write(text);
       }
     } catch (e) {
@@ -529,7 +504,6 @@ wss.on("connection", (ws, req) => {
     console.error(`WebSocket error for session ${sessionId}:`, error);
   });
 
-  // Envoyer un message de bienvenue
   ws.send(JSON.stringify({ 
     type: 'connected', 
     sessionId,
@@ -540,6 +514,7 @@ wss.on("connection", (ws, req) => {
 
 /* ---- WS AUTH + ROUTING ---- */
 server.on("upgrade", (req, socket, head) => {
+  // Only apply auth to WebSocket upgrades, not HTTP requests
   const auth = req.headers.authorization;
   
   if (auth !== `Bearer ${AGENT_TOKEN}`) {
@@ -569,11 +544,9 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
-// Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('📴 SIGTERM received, shutting down gracefully...');
   
-  // Fermer toutes les sessions de terminal
   activeSessions.forEach((shell, id) => {
     console.log(`Closing session ${id}...`);
     try {
@@ -588,7 +561,6 @@ process.on('SIGTERM', () => {
     process.exit(0);
   });
 
-  // Forcer la fermeture après 10 secondes
   setTimeout(() => {
     console.error('❌ Forced shutdown after timeout');
     process.exit(1);
@@ -604,6 +576,9 @@ server.listen(PORT, () => {
 ║   Port: ${PORT.toString().padEnd(31)} ║
 ║   Working Dir: ${WORKDIR.substring(0, 23).padEnd(23)} ║
 ║   Platform: ${os.platform().padEnd(28)} ║
+║   CORS: Enabled (*)                      ║
 ╚══════════════════════════════════════════╝
+
+📝 Test with: curl https://your-domain.app.github.dev/health
   `);
 });
