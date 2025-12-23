@@ -5,6 +5,7 @@ import fs from "fs/promises";
 import path from "path";
 import http from "http";
 import os from "os";
+import cors from 'cors'
 
 /* ================= CONFIG ================= */
 
@@ -37,6 +38,24 @@ function safePath(p: string) {
 
 const app = express();
 
+/* ================= CORS ================= */
+app.use(cors({
+    origin: (origin, cb) => {
+      if (
+        !origin ||
+        origin.includes(".app.github.dev") ||
+        origin.includes("localhost")
+      ) {
+        cb(null, origin);
+      } else {
+        cb(new Error("CORS blocked"));
+      }
+    },
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: false,
+  }))
+  
 /* ================= ROUTES ================= */
 
 /* ---- HEALTH ---- */
