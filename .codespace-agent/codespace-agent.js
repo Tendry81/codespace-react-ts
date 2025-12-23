@@ -1,5 +1,4 @@
 import express from "express";
-import cors from "cors";
 import { WebSocketServer } from "ws";
 import pty from "node-pty";
 import fs from "fs/promises";
@@ -8,8 +7,8 @@ import http from "http";
 import os from "os";
 
 /* ================= CONFIG ================= */
+
 const PORT = process.env.PORT || 3001;
-const AGENT_TOKEN = process.env.AGENT_TOKEN || "secrets";
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 async function determineWorkdir() {
@@ -23,14 +22,8 @@ async function determineWorkdir() {
 const WORKDIR = await determineWorkdir();
 
 console.log(`📁 Working directory: ${WORKDIR}`);
-console.log(`🔒 Auth token loaded`);
 
 /* ================= UTILS ================= */
-
-function assertAuth(_req: express.Request, _res: express.Response) {
-  // ✅ Auth volontairement désactivée (comme demandé)
-  return true;
-}
 
 function safePath(p: string) {
   const resolved = path.resolve(WORKDIR, p);
@@ -43,41 +36,6 @@ function safePath(p: string) {
 /* ================= APP ================= */
 
 const app = express();
-
-/* ======================================================
-   ✅ CORS — DOIT ÊTRE TOUT EN HAUT
-   ====================================================== */
-
-app.use(
-  cors({
-    origin: (origin, cb) => {
-      if (
-        !origin ||
-        origin.includes(".app.github.dev") ||
-        origin.includes("localhost")
-      ) {
-        cb(null, origin);
-      } else {
-        cb(new Error("CORS blocked"));
-      }
-    },
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: false,
-  })
-);
-
-// ⚠️ OBLIGATOIRE pour GitHub Codespaces
-app.options("*", cors());
-
-/* ================= MIDDLEWARES ================= */
-
-app.use(express.json({ limit: "10mb" }));
-
-app.use((req, _res, next) => {
-  console.log(`${req.method} ${req.url} - Origin: ${req.headers.origin || "none"}`);
-  next();
-});
 
 /* ================= ROUTES ================= */
 
@@ -94,8 +52,6 @@ app.get("/health", (_req, res) => {
 
 /* ---- READ FILE ---- */
 app.get("/api/files", async (req, res) => {
-  if (!assertAuth(req, res)) return;
-
   try {
     const filePath = safePath(req.query.path as string);
     const content = await fs.readFile(filePath, "utf8");
@@ -107,13 +63,22 @@ app.get("/api/files", async (req, res) => {
 
 /* ---- WRITE FILE ---- */
 app.post("/api/files", async (req, res) => {
-  if (!assertAuth(req, res)) return;
-
   try {
-    const filePath = safePath(req.body.path);
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(filePath, req.body.content, "utf8");
-    res.json({ success: true });
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > MAX_FILE_SIZE) {
+        req.destroy();
+      }
+    });
+
+    req.on("end", async () => {
+      const { path: p, content } = JSON.parse(body);
+      const filePath = safePath(p);
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(filePath, content, "utf8");
+      res.json({ success: true });
+    });
   } catch (e: any) {
     res.status(400).json({ error: e.message });
   }
@@ -121,8 +86,6 @@ app.post("/api/files", async (req, res) => {
 
 /* ---- DELETE FILE ---- */
 app.delete("/api/files", async (req, res) => {
-  if (!assertAuth(req, res)) return;
-
   try {
     const filePath = safePath(req.query.path as string);
     await fs.rm(filePath, { recursive: true, force: true });
@@ -131,6 +94,27 @@ app.delete("/api/files", async (req, res) => {
     res.status(400).json({ error: e.message });
   }
 });
+
+/* ---- LIST DIRECTORY CONTENTS ---- */
+app.get("/api/dir/files", async (req, res) => {
+  try {
+    const dirPath = safePath((req.query.path as string) || ".");
+    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+
+    const result = entries.map((entry) => ({
+      name: entry.name,
+      type: entry.isDirectory() ? "directory" : "file",
+    }));
+
+    res.json({
+      path: req.query.path || ".",
+      entries: result,
+    });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 
 /* ================= SERVER ================= */
 
@@ -141,10 +125,14 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
 wss.on("connection", (ws) => {
-  const shell = pty.spawn(process.platform === "win32" ? "powershell.exe" : "bash", [], {
-    cwd: WORKDIR,
-    env: process.env,
-  });
+  const shell = pty.spawn(
+    process.platform === "win32" ? "powershell.exe" : "bash",
+    [],
+    {
+      cwd: WORKDIR,
+      env: process.env,
+    }
+  );
 
   shell.onData((data) => {
     if (ws.readyState === ws.OPEN) {
@@ -161,14 +149,8 @@ wss.on("connection", (ws) => {
   });
 });
 
-/* ---- WS AUTH ---- */
+/* ---- WS UPGRADE (NO AUTH) ---- */
 server.on("upgrade", (req, socket, head) => {
-  if (req.headers.authorization !== `Bearer ${AGENT_TOKEN}`) {
-    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-    socket.destroy();
-    return;
-  }
-
   if (req.url === "/ws/terminal") {
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit("connection", ws, req);
@@ -186,7 +168,7 @@ server.listen(PORT, () => {
 ║   ✅ Codespace Agent Running         ║
 ╠══════════════════════════════════════╣
 ║   Port: ${PORT}                     ║
-║   CORS: OK (Codespaces compatible)  ║
+║   Security: NONE                    ║
 ╚══════════════════════════════════════╝
 `);
 });
