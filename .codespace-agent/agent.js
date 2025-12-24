@@ -8,10 +8,12 @@ const projectManager = new ProjectManager('../');
 
 app.use(cors({
     origin: (origin, cb) => {
+      console.log(origin)
       if (
         !origin ||
         origin.includes(".app.github.dev") ||
-        origin.includes("localhost")
+        origin.includes("localhost") ||
+        origin.includes(".scf.usercontent.goog")
       ) {
         cb(null, origin);
       } else {
