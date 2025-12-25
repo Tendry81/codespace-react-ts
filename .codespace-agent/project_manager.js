@@ -129,28 +129,51 @@ class ProjectManager {
   /**
    * List files and directories
    */
-  async listDirectory(dirPath = '') {
-    const fullPath = path.join(this.basePath, dirPath);
+  async listDirectory(dirPath = '', recursive = false, with_content = false) {
+  const fullPath = path.join(this.basePath, dirPath);
+  
+  try {
+    const items = await fs.readdir(fullPath, { withFileTypes: true });
     
-    try {
-      const items = await fs.readdir(fullPath, { withFileTypes: true });
-      
-      const result = items.map(item => ({
-        name: item.name,
-        type: item.isDirectory() ? 'directory' : 'file',
-        path: path.join(dirPath, item.name)
-      }));
-      
-      return { 
-        success: true, 
-        items: result, 
-        path: fullPath 
-      };
-    } catch (error) {
-      throw new Error(`Failed to list directory: ${error.message}`);
-    }
+    const result = await Promise.all(
+      items.map(async (item) => {
+        const itemPath = path.join(dirPath, item.name);
+        const itemData = {
+          name: item.name,
+          type: item.isDirectory() ? 'directory' : 'file',
+          path: itemPath
+        };
+        
+        // If recursive and it's a directory, list its contents
+        if (recursive && item.isDirectory()) {
+          const subResult = await this.listDirectory(itemPath, recursive, with_content);
+          itemData.children = subResult.items;
+        }
+        
+        // If with_content and it's a file, read its content
+        if (with_content && item.isFile()) {
+          try {
+            const fileResult = await this.readFile(itemPath);
+            itemData.content = fileResult.content;
+          } catch (error) {
+            itemData.content = null;
+            itemData.contentError = error.message;
+          }
+        }
+        
+        return itemData;
+      })
+    );
+    
+    return { 
+      success: true, 
+      items: result, 
+      path: fullPath 
+    };
+  } catch (error) {
+    throw new Error(`Failed to list directory: ${error.message}`);
   }
-
+}
   /**
    * Run shell command with output
    */
