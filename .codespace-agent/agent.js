@@ -142,9 +142,9 @@ app.post('/api/files/delete', async (req, res) => {
 // List directory contents
 app.post('/api/ls', async (req, res) => {
   try {
-    const { path } = req.body;
+    const { path, recursive = false, with_content = false } = req.body;
     const dirPath = path || '';
-    const result = await projectManager.listDirectory(dirPath);
+    const result = await projectManager.listDirectory(dirPath, recursive, with_content);
     res.json(result);
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
