@@ -1,4 +1,5 @@
 const fs = require('fs').promises;
+const ignore = require('ignore');
 const path = require('path');
 const { exec, spawn } = require('child_process');
 const util = require('util');
@@ -8,6 +9,8 @@ const execPromise = util.promisify(exec);
 class ProjectManager {
   constructor(basePath = '') {
     this.basePath = basePath;
+    this.ignoreFilter = null;
+    this.loadGitignore();
   }
 
   /**
@@ -20,6 +23,44 @@ class ProjectManager {
     } catch (error) {
       throw new Error(`Initialization failed: ${error.message}`);
     }
+  }
+
+  /**
+   * Load and parse .gitignore file
+   */
+  async loadGitignore() {
+    try {
+      const gitignorePath = path.join(this.basePath, '.gitignore');
+      const gitignoreContent = await fs.readFile(gitignorePath, 'utf8');
+      
+      this.ignoreFilter = ignore().add(gitignoreContent);
+      
+      // Add hardcoded exclusions
+      this.ignoreFilter.add('.devcontainer');
+      this.ignoreFilter.add('.codespace-agent');
+    } catch (error) {
+      // If .gitignore doesn't exist, just use hardcoded exclusions
+      this.ignoreFilter = ignore();
+      this.ignoreFilter.add('.devcontainer');
+      this.ignoreFilter.add('.codespace-agent');
+    }
+  }
+
+  /**
+   * Check if a path should be ignored
+   */
+  shouldIgnore(relativePath) {
+    if (!this.ignoreFilter) {
+      return false;
+    }
+    
+    // Always exclude these directories
+    const pathParts = relativePath.split(path.sep);
+    if (pathParts.includes('.devcontainer') || pathParts.includes('.codespace-agent')) {
+      return true;
+    }
+    
+    return this.ignoreFilter.ignores(relativePath);
   }
 
   /**
@@ -130,50 +171,59 @@ class ProjectManager {
    * List files and directories
    */
   async listDirectory(dirPath = '', recursive = false, with_content = false) {
-  const fullPath = path.join(this.basePath, dirPath);
-  
-  try {
-    const items = await fs.readdir(fullPath, { withFileTypes: true });
+    const fullPath = path.join(this.basePath, dirPath);
     
-    const result = await Promise.all(
-      items.map(async (item) => {
-        const itemPath = path.join(dirPath, item.name);
-        const itemData = {
-          name: item.name,
-          type: item.isDirectory() ? 'directory' : 'file',
-          path: itemPath
-        };
-        
-        // If recursive and it's a directory, list its contents
-        if (recursive && item.isDirectory()) {
-          const subResult = await this.listDirectory(itemPath, recursive, with_content);
-          itemData.children = subResult.items;
-        }
-        
-        // If with_content and it's a file, read its content
-        if (with_content && item.isFile()) {
-          try {
-            const fileResult = await this.readFile(itemPath);
-            itemData.content = fileResult.content;
-          } catch (error) {
-            itemData.content = null;
-            itemData.contentError = error.message;
+    try {
+      const items = await fs.readdir(fullPath, { withFileTypes: true });
+      
+      const result = await Promise.all(
+        items.map(async (item) => {
+          const itemPath = path.join(dirPath, item.name);
+          
+          // Check if this path should be ignored
+          if (this.shouldIgnore(itemPath)) {
+            return null;
           }
-        }
-        
-        return itemData;
-      })
-    );
-    
-    return { 
-      success: true, 
-      items: result, 
-      path: fullPath 
-    };
-  } catch (error) {
-    throw new Error(`Failed to list directory: ${error.message}`);
+          
+          const itemData = {
+            name: item.name,
+            type: item.isDirectory() ? 'directory' : 'file',
+            path: itemPath
+          };
+          
+          // If recursive and it's a directory, list its contents
+          if (recursive && item.isDirectory()) {
+            const subResult = await this.listDirectory(itemPath, recursive, with_content);
+            itemData.children = subResult.items;
+          }
+          
+          // If with_content and it's a file, read its content
+          if (with_content && item.isFile()) {
+            try {
+              const fileResult = await this.readFile(itemPath);
+              itemData.content = fileResult.content;
+            } catch (error) {
+              itemData.content = null;
+              itemData.contentError = error.message;
+            }
+          }
+          
+          return itemData;
+        })
+      );
+      
+      // Filter out null values (ignored items)
+      const filteredResult = result.filter(item => item !== null);
+      
+      return { 
+        success: true, 
+        items: filteredResult, 
+        path: fullPath 
+      };
+    } catch (error) {
+      throw new Error(`Failed to list directory: ${error.message}`);
+    }
   }
-}
   /**
    * Run shell command with output
    */
